@@ -13,6 +13,8 @@ import { createCanvas2D } from "./render/Canvas2D.js";
 import { createDebugOverlay } from "./render/DebugOverlay.js";
 import { Piano } from "./instrument/Piano.js";
 import { PianoSynth } from "./audio/PianoSynth.js";
+import { Drums } from "./instrument/Drums.js";
+import { DrumSynth } from "./audio/DrumSynth.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -63,6 +65,9 @@ async function boot() {
   const piano = new Piano();
   piano.resize(window.innerWidth, window.innerHeight);
   const pianoSynth = new PianoSynth();
+  const drums = new Drums();
+  drums.resize(window.innerWidth, window.innerHeight);
+  const drumSynth = new DrumSynth();
 
   // Pinch → instrument router. We look up the *current* hover key at
   // pinch-down time and lock it in for that slot until pinch-up.
@@ -75,16 +80,25 @@ async function boot() {
   const pinch = createPinchDetector({
     onPinchDown: (slot, hand) => {
       pianoSynth.resume();
-      if (instrument !== INSTRUMENT.PIANO) return;
-      const hovered = piano.hands.get(slot)?.hoveredKey;
-      if (!hovered) return;
-      piano.pressKey(slot, hovered);
-      pianoSynth.noteOn(hovered.midi);
+      drumSynth.resume();
+      if (instrument === INSTRUMENT.PIANO) {
+        const hovered = piano.hands.get(slot)?.hoveredKey;
+        if (!hovered) return;
+        piano.pressKey(slot, hovered);
+        pianoSynth.noteOn(hovered.midi);
+      } else if (instrument === INSTRUMENT.DRUMS) {
+        // Drums are one-shots: pinch-down strikes, pinch-up does
+        // nothing. No need to remember which pad fired — the synth
+        // and the on-pad flash both decay on their own.
+        const padName = drums.strike(slot);
+        if (padName) drumSynth.trigger(padName);
+      }
     },
     onPinchUp: (slot) => {
-      if (instrument !== INSTRUMENT.PIANO) return;
-      const released = piano.releaseKey(slot);
-      if (released) pianoSynth.noteOff(released.midi);
+      if (instrument === INSTRUMENT.PIANO) {
+        const released = piano.releaseKey(slot);
+        if (released) pianoSynth.noteOff(released.midi);
+      }
     },
   });
 
@@ -115,12 +129,14 @@ async function boot() {
     statusEl.textContent =
       kind === INSTRUMENT.PIANO
         ? "Pinch over a key to play."
-        : "Drum kit lands in Phase 5 — switching shows a placeholder.";
-    // Resume audio here too — the picker click is itself a user
-    // gesture, so this primes the AudioContext for any browsers
-    // that demand a gesture even before the first noteOn.
+        : "Pinch over a pad to hit it.";
+    // Resume both audio contexts — the picker click is a user
+    // gesture, so this primes whichever browser demands one before
+    // any context creation.
     pianoSynth.resume();
-    // Force-clear any held notes when switching instruments.
+    drumSynth.resume();
+    // Force-clear any sustained piano notes whenever we leave or
+    // re-enter the piano. Drums are one-shots so don't need this.
     pianoSynth.allNotesOff();
   }
   $("#pick-piano-btn").addEventListener("click", () => pick(INSTRUMENT.PIANO));
@@ -140,7 +156,9 @@ async function boot() {
     $("#settings-panel").classList.toggle("hidden");
   });
   $("#sound-toggle").addEventListener("change", (e) => {
-    pianoSynth.setMuted(!e.target.checked);
+    const muted = !e.target.checked;
+    pianoSynth.setMuted(muted);
+    drumSynth.setMuted(muted);
   });
 
   /**
@@ -158,24 +176,6 @@ async function boot() {
     return { x: offX + lm.x * s, y: offY + lm.y * s };
   }
 
-  function drawDrumsPlaceholder() {
-    const ctx = instr.ctx;
-    const w = window.innerWidth, h = window.innerHeight;
-    ctx.save();
-    ctx.fillStyle = "rgba(78, 205, 196, 0.15)";
-    ctx.fillRect(40, h * 0.6, w - 80, h * 0.32);
-    ctx.strokeStyle = "rgba(78, 205, 196, 0.6)";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([8, 8]);
-    ctx.strokeRect(40, h * 0.6, w - 80, h * 0.32);
-    ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.font = "600 24px -apple-system, system-ui, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("Drum pads go here (Phase 5)", w / 2, h * 0.76);
-    ctx.restore();
-  }
 
   // --- Tracker loop -----------------------------------------------------
   // Driven off videoEl.currentTime so we skip duplicate frames the
@@ -196,8 +196,9 @@ async function boot() {
       );
 
       // Hover update first so onPinchDown can read the latest hover.
-      if (instrument === INSTRUMENT.PIANO && state === STATE.PLAYING) {
-        piano.update(screenCursors);
+      if (state === STATE.PLAYING) {
+        if (instrument === INSTRUMENT.PIANO) piano.update(screenCursors);
+        else if (instrument === INSTRUMENT.DRUMS) drums.update(screenCursors);
       }
 
       const pinchStates = pinch.update(detection, now);
@@ -208,7 +209,7 @@ async function boot() {
         if (instrument === INSTRUMENT.PIANO) {
           piano.draw(instr.ctx, SLOT_COLORS);
         } else if (instrument === INSTRUMENT.DRUMS) {
-          drawDrumsPlaceholder();
+          drums.draw(instr.ctx, SLOT_COLORS, now);
         }
       }
 
@@ -232,6 +233,7 @@ async function boot() {
     instr.resize();
     debug.resize();
     piano.resize(window.innerWidth, window.innerHeight);
+    drums.resize(window.innerWidth, window.innerHeight);
   });
 }
 
