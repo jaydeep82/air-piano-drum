@@ -7,7 +7,9 @@
  * later phases.
  */
 import { initWebcam } from "./tracker/webcam.js";
+import { createHandTracker } from "./tracker/handTracker.js";
 import { createCanvas2D } from "./render/Canvas2D.js";
+import { createDebugOverlay } from "./render/DebugOverlay.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -52,6 +54,21 @@ async function boot() {
   // --- Canvases ---------------------------------------------------------
   const instr = createCanvas2D(instrumentCanvas);
   const debug = createCanvas2D(debugCanvas);
+  const debugOverlay = createDebugOverlay({ ctx: debug.ctx });
+
+  // --- Hand tracker -----------------------------------------------------
+  // Loaded eagerly during boot so the picker overlay covers the model
+  // download (~5 MB on first visit). By the time the user picks an
+  // instrument, the first detect() call won't stall on model init.
+  statusEl.textContent = "Loading hand-tracking model…";
+  let tracker;
+  try {
+    tracker = await createHandTracker({ numHands: 2 });
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = `Tracker error: ${err.message}`;
+    return;
+  }
 
   // --- Instrument picker ------------------------------------------------
   state = STATE.PICK_INSTRUMENT;
@@ -64,7 +81,7 @@ async function boot() {
     instrumentOverlay.classList.add("hidden");
     modeValEl.textContent = kind === INSTRUMENT.PIANO ? "🎹 Piano" : "🥁 Drums";
     statusEl.textContent =
-      "Phase 1 ready — pinch detection, keys, and pads land in later phases.";
+      "Hands tracked — pinch logic + keys/pads land in Phases 3–5.";
     drawPlaceholder();
   }
   $("#pick-piano-btn").addEventListener("click", () => pick(INSTRUMENT.PIANO));
@@ -115,6 +132,34 @@ async function boot() {
     );
     ctx.restore();
   }
+
+  // --- Tracker loop -----------------------------------------------------
+  // Driven off videoEl.currentTime so we skip duplicate frames the
+  // camera hasn't actually delivered yet — saves CPU and matches the
+  // pattern used in the other body-tracking projects in this set.
+  let lastVideoTime = -1;
+  function trackerLoop() {
+    if (videoEl.readyState >= 2 && videoEl.currentTime !== lastVideoTime) {
+      lastVideoTime = videoEl.currentTime;
+      const detection = tracker.detect(videoEl, performance.now());
+
+      // Tracker draws every frame regardless of state — even on the
+      // picker overlay it feels good to see the cursor latch onto your
+      // hand. Cuts ambiguity about whether the camera is really alive.
+      debug.clear();
+      debugOverlay.render(detection);
+
+      if (state === STATE.PLAYING) {
+        const n = detection.hands.length;
+        statusEl.textContent =
+          n === 0 ? "Step into frame." :
+          n === 1 ? "1 hand tracked — show two for full keyboard." :
+                    "2 hands tracked.";
+      }
+    }
+    requestAnimationFrame(trackerLoop);
+  }
+  trackerLoop();
 
   // --- Resize -----------------------------------------------------------
   window.addEventListener("resize", () => {
