@@ -11,6 +11,8 @@ import { createHandTracker } from "./tracker/handTracker.js";
 import { createPinchDetector } from "./tracker/pinchDetector.js";
 import { createCanvas2D } from "./render/Canvas2D.js";
 import { createDebugOverlay } from "./render/DebugOverlay.js";
+import { Piano } from "./instrument/Piano.js";
+import { PianoSynth } from "./audio/PianoSynth.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -57,17 +59,32 @@ async function boot() {
   const debug = createCanvas2D(debugCanvas);
   const debugOverlay = createDebugOverlay({ ctx: debug.ctx });
 
-  // Pinch detector — Phase 4/5 will replace these console logs with
-  // real note-on / note-off triggers. Keeping the stubs so the HUD
-  // already lights up on pinch and we can see hysteresis working.
-  let pinchHudUntil = 0;
+  // --- Instruments ------------------------------------------------------
+  const piano = new Piano();
+  piano.resize(window.innerWidth, window.innerHeight);
+  const pianoSynth = new PianoSynth();
+
+  // Pinch → instrument router. We look up the *current* hover key at
+  // pinch-down time and lock it in for that slot until pinch-up.
+  // Locking matters because the tracker keeps reporting cursor
+  // movement while the user is pinched; if we re-evaluated each
+  // frame, dragging the fingertip would walk the note up the
+  // keyboard like a glissando, which is rarely what the player
+  // intended (and isn't expressive enough to be worth the surprise).
+  const SLOT_COLORS = ["#4ecdc4", "#f78fb3"];
   const pinch = createPinchDetector({
     onPinchDown: (slot, hand) => {
-      console.log("pinch ↓", slot, hand?.fingertip);
-      pinchHudUntil = performance.now() + 500;
+      pianoSynth.resume();
+      if (instrument !== INSTRUMENT.PIANO) return;
+      const hovered = piano.hands.get(slot)?.hoveredKey;
+      if (!hovered) return;
+      piano.pressKey(slot, hovered);
+      pianoSynth.noteOn(hovered.midi);
     },
     onPinchUp: (slot) => {
-      console.log("pinch ↑", slot);
+      if (instrument !== INSTRUMENT.PIANO) return;
+      const released = piano.releaseKey(slot);
+      if (released) pianoSynth.noteOff(released.midi);
     },
   });
 
@@ -96,8 +113,15 @@ async function boot() {
     instrumentOverlay.classList.add("hidden");
     modeValEl.textContent = kind === INSTRUMENT.PIANO ? "🎹 Piano" : "🥁 Drums";
     statusEl.textContent =
-      "Hands tracked — pinch logic + keys/pads land in Phases 3–5.";
-    drawPlaceholder();
+      kind === INSTRUMENT.PIANO
+        ? "Pinch over a key to play."
+        : "Drum kit lands in Phase 5 — switching shows a placeholder.";
+    // Resume audio here too — the picker click is itself a user
+    // gesture, so this primes the AudioContext for any browsers
+    // that demand a gesture even before the first noteOn.
+    pianoSynth.resume();
+    // Force-clear any held notes when switching instruments.
+    pianoSynth.allNotesOff();
   }
   $("#pick-piano-btn").addEventListener("click", () => pick(INSTRUMENT.PIANO));
   $("#pick-drums-btn").addEventListener("click", () => pick(INSTRUMENT.DRUMS));
@@ -115,36 +139,41 @@ async function boot() {
   $("#settings-toggle").addEventListener("click", () => {
     $("#settings-panel").classList.toggle("hidden");
   });
+  $("#sound-toggle").addEventListener("change", (e) => {
+    pianoSynth.setMuted(!e.target.checked);
+  });
 
-  // --- Phase 1 placeholder render --------------------------------------
-  // Scribbles a label onto the instrument canvas so the user sees that
-  // the layer is alive and laid out correctly. Phase 4/5 replace this
-  // with real keys / pads.
-  function drawPlaceholder() {
-    instr.clear();
-    const ctx = instr.ctx;
+  /**
+   * Map a video-pixel landmark to CSS pixels using the same
+   * object-fit:cover math the browser applies to the <video> element.
+   * Same routine the debug overlay uses internally — kept here so
+   * Piano can reason in viewport coords without importing render code.
+   */
+  function videoToScreen(lm, vw, vh) {
     const w = window.innerWidth;
     const h = window.innerHeight;
+    const s = Math.max(w / vw, h / vh);
+    const offX = (w - vw * s) / 2;
+    const offY = (h - vh * s) / 2;
+    return { x: offX + lm.x * s, y: offY + lm.y * s };
+  }
+
+  function drawDrumsPlaceholder() {
+    const ctx = instr.ctx;
+    const w = window.innerWidth, h = window.innerHeight;
     ctx.save();
-    ctx.fillStyle = "rgba(247, 143, 179, 0.15)";
+    ctx.fillStyle = "rgba(78, 205, 196, 0.15)";
     ctx.fillRect(40, h * 0.6, w - 80, h * 0.32);
-    ctx.strokeStyle = "rgba(247, 143, 179, 0.6)";
+    ctx.strokeStyle = "rgba(78, 205, 196, 0.6)";
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 8]);
     ctx.strokeRect(40, h * 0.6, w - 80, h * 0.32);
     ctx.setLineDash([]);
-
     ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
     ctx.font = "600 24px -apple-system, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(
-      instrument === INSTRUMENT.PIANO
-        ? "Piano keys go here (Phase 4)"
-        : "Drum pads go here (Phase 5)",
-      w / 2,
-      h * 0.76,
-    );
+    ctx.fillText("Drum pads go here (Phase 5)", w / 2, h * 0.76);
     ctx.restore();
   }
 
@@ -158,25 +187,40 @@ async function boot() {
       lastVideoTime = videoEl.currentTime;
       const now = performance.now();
       const detection = tracker.detect(videoEl, now);
+
+      // Project fingertips into CSS pixel space — keys live in
+      // viewport coordinates, so we need the cursor in matching
+      // units before hover detection.
+      const screenCursors = detection.hands.map((hand) =>
+        videoToScreen(hand.fingertip, detection.width, detection.height),
+      );
+
+      // Hover update first so onPinchDown can read the latest hover.
+      if (instrument === INSTRUMENT.PIANO && state === STATE.PLAYING) {
+        piano.update(screenCursors);
+      }
+
       const pinchStates = pinch.update(detection, now);
 
-      // Tracker draws every frame regardless of state — even on the
-      // picker overlay it feels good to see the cursor latch onto your
-      // hand and react to pinch. Cuts ambiguity about whether the
-      // camera is really alive.
+      // --- Render -----------------------------------------------------
+      instr.clear();
+      if (state === STATE.PLAYING) {
+        if (instrument === INSTRUMENT.PIANO) {
+          piano.draw(instr.ctx, SLOT_COLORS);
+        } else if (instrument === INSTRUMENT.DRUMS) {
+          drawDrumsPlaceholder();
+        }
+      }
+
       debug.clear();
       debugOverlay.render(detection, pinchStates);
 
       if (state === STATE.PLAYING) {
         const n = detection.hands.length;
-        if (now < pinchHudUntil) {
-          statusEl.textContent = "Pinch! 🤏";
-        } else {
-          statusEl.textContent =
-            n === 0 ? "Step into frame." :
-            n === 1 ? "1 hand tracked — pinch to test." :
-                      "2 hands tracked — pinch either to test.";
-        }
+        statusEl.textContent =
+          n === 0 ? "Step into frame." :
+          n === 1 ? "1 hand tracked — pinch over a key." :
+                    "2 hands tracked — play with both.";
       }
     }
     requestAnimationFrame(trackerLoop);
@@ -187,7 +231,7 @@ async function boot() {
   window.addEventListener("resize", () => {
     instr.resize();
     debug.resize();
-    if (state === STATE.PLAYING) drawPlaceholder();
+    piano.resize(window.innerWidth, window.innerHeight);
   });
 }
 
