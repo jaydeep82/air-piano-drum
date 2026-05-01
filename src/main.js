@@ -8,6 +8,7 @@
  */
 import { initWebcam } from "./tracker/webcam.js";
 import { createHandTracker } from "./tracker/handTracker.js";
+import { createPinchDetector } from "./tracker/pinchDetector.js";
 import { createCanvas2D } from "./render/Canvas2D.js";
 import { createDebugOverlay } from "./render/DebugOverlay.js";
 
@@ -55,6 +56,20 @@ async function boot() {
   const instr = createCanvas2D(instrumentCanvas);
   const debug = createCanvas2D(debugCanvas);
   const debugOverlay = createDebugOverlay({ ctx: debug.ctx });
+
+  // Pinch detector — Phase 4/5 will replace these console logs with
+  // real note-on / note-off triggers. Keeping the stubs so the HUD
+  // already lights up on pinch and we can see hysteresis working.
+  let pinchHudUntil = 0;
+  const pinch = createPinchDetector({
+    onPinchDown: (slot, hand) => {
+      console.log("pinch ↓", slot, hand?.fingertip);
+      pinchHudUntil = performance.now() + 500;
+    },
+    onPinchUp: (slot) => {
+      console.log("pinch ↑", slot);
+    },
+  });
 
   // --- Hand tracker -----------------------------------------------------
   // Loaded eagerly during boot so the picker overlay covers the model
@@ -141,20 +156,27 @@ async function boot() {
   function trackerLoop() {
     if (videoEl.readyState >= 2 && videoEl.currentTime !== lastVideoTime) {
       lastVideoTime = videoEl.currentTime;
-      const detection = tracker.detect(videoEl, performance.now());
+      const now = performance.now();
+      const detection = tracker.detect(videoEl, now);
+      const pinchStates = pinch.update(detection, now);
 
       // Tracker draws every frame regardless of state — even on the
       // picker overlay it feels good to see the cursor latch onto your
-      // hand. Cuts ambiguity about whether the camera is really alive.
+      // hand and react to pinch. Cuts ambiguity about whether the
+      // camera is really alive.
       debug.clear();
-      debugOverlay.render(detection);
+      debugOverlay.render(detection, pinchStates);
 
       if (state === STATE.PLAYING) {
         const n = detection.hands.length;
-        statusEl.textContent =
-          n === 0 ? "Step into frame." :
-          n === 1 ? "1 hand tracked — show two for full keyboard." :
-                    "2 hands tracked.";
+        if (now < pinchHudUntil) {
+          statusEl.textContent = "Pinch! 🤏";
+        } else {
+          statusEl.textContent =
+            n === 0 ? "Step into frame." :
+            n === 1 ? "1 hand tracked — pinch to test." :
+                      "2 hands tracked — pinch either to test.";
+        }
       }
     }
     requestAnimationFrame(trackerLoop);
