@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Air Piano / Drum Kit</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Webcam (mirrored) -->
+      <video id="webcam" autoplay playsinline muted></video>
+
+      <!-- Instrument canvas — keys / pads + key glow + ripples -->
+      <canvas id="instrument-canvas"></canvas>
+
+      <!-- Debug / cursor canvas — hand skeleton + fingertip dots -->
+      <canvas id="debug-canvas"></canvas>
+
+      <!-- HUD -->
+      <div id="hud">
+        <div id="status">Initializing camera…</div>
+        <div id="mode-strip"><span id="mode-val">—</span></div>
+      </div>
+
+      <!-- Settings -->
+      <div id="settings">
+        <button id="settings-toggle" class="icon-btn" aria-label="Settings">⚙</button>
+        <div id="settings-panel" class="hidden">
+          <label class="setting-row">
+            <span>Sound</span>
+            <input type="checkbox" id="sound-toggle" checked />
+          </label>
+          <p class="hint">More options arrive in Phase 6 (MIDI out, octave shift).</p>
+          <hr class="settings-sep" />
+          <button id="switch-instrument-btn" class="settings-btn">Switch Instrument</button>
+        </div>
+      </div>
+
+      <!-- Permission gate -->
+      <div id="permission-overlay" class="overlay">
+        <div class="overlay-content">
+          <h1>Air Piano / Drum Kit</h1>
+          <p>Pinch the air to play. Pick an instrument once your camera's on.</p>
+          <button id="start-btn">Enable Camera &amp; Play</button>
+          <p class="hint">No video leaves your device — everything runs locally.</p>
+        </div>
+      </div>
+
+      <!-- Instrument picker -->
+      <div id="instrument-overlay" class="overlay hidden">
+        <div class="overlay-content">
+          <h1>Pick your instrument</h1>
+          <p>You can switch at any time from settings.</p>
+          <div class="instrument-buttons">
+            <button id="pick-piano-btn">🎹 Piano</button>
+            <button id="pick-drums-btn" class="alt">🥁 Drum Kit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
