@@ -31,7 +31,21 @@
             <span>Sound</span>
             <input type="checkbox" id="sound-toggle" checked />
           </label>
-          <p class="hint">More options arrive in Phase 6 (MIDI out, octave shift).</p>
+          <label class="setting-row" id="midi-row" hidden>
+            <span>MIDI out</span>
+            <select id="midi-out">
+              <option value="">Off</option>
+            </select>
+          </label>
+          <div class="setting-row" id="octave-row">
+            <span>Octave (piano)</span>
+            <span class="octave-controls">
+              <button id="octave-down-btn" class="mini-btn">−</button>
+              <span id="octave-val">0</span>
+              <button id="octave-up-btn" class="mini-btn">+</button>
+            </span>
+          </div>
+          <p class="hint">MIDI out is optional — internal synth always plays.</p>
           <hr class="settings-sep" />
           <button id="switch-instrument-btn" class="settings-btn">Switch Instrument</button>
         </div>

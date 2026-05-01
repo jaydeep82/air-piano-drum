@@ -15,6 +15,7 @@ import { Piano } from "./instrument/Piano.js";
 import { PianoSynth } from "./audio/PianoSynth.js";
 import { Drums } from "./instrument/Drums.js";
 import { DrumSynth } from "./audio/DrumSynth.js";
+import { MidiOut } from "./midi/midiOut.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -69,6 +70,30 @@ async function boot() {
   drums.resize(window.innerWidth, window.innerHeight);
   const drumSynth = new DrumSynth();
 
+  // --- Web MIDI (optional) ---------------------------------------------
+  // Init in the background so it doesn't block instrument selection.
+  // The settings UI only reveals the dropdown if MIDI access succeeds —
+  // no point showing a permanently-empty list on Safari without
+  // the experimental flag, or in privacy-restricted iframes.
+  const midi = new MidiOut();
+  const midiRow = $("#midi-row");
+  const midiSelect = $("#midi-out");
+  midi.onChange = (outputs) => {
+    const prev = midiSelect.value;
+    midiSelect.innerHTML = `<option value="">Off</option>` +
+      outputs
+        .map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`)
+        .join("");
+    // Preserve selection across hot-plug events when possible.
+    if (outputs.find((o) => o.id === prev)) midiSelect.value = prev;
+  };
+  midi.init().then((ok) => {
+    if (ok) midiRow.hidden = false;
+  });
+  midiSelect.addEventListener("change", (e) => {
+    midi.setOutput(e.target.value || null);
+  });
+
   // Pinch → instrument router. We look up the *current* hover key at
   // pinch-down time and lock it in for that slot until pinch-up.
   // Locking matters because the tracker keeps reporting cursor
@@ -78,26 +103,34 @@ async function boot() {
   // intended (and isn't expressive enough to be worth the surprise).
   const SLOT_COLORS = ["#4ecdc4", "#f78fb3"];
   const pinch = createPinchDetector({
-    onPinchDown: (slot, hand) => {
+    onPinchDown: (slot, hand, info) => {
       pianoSynth.resume();
       drumSynth.resume();
+      const velocity = info?.velocity ?? 0.85;
       if (instrument === INSTRUMENT.PIANO) {
         const hovered = piano.hands.get(slot)?.hoveredKey;
         if (!hovered) return;
         piano.pressKey(slot, hovered);
-        pianoSynth.noteOn(hovered.midi);
+        pianoSynth.noteOn(hovered.midi, velocity);
+        midi.pianoNoteOn(hovered.midi, velocity);
       } else if (instrument === INSTRUMENT.DRUMS) {
         // Drums are one-shots: pinch-down strikes, pinch-up does
         // nothing. No need to remember which pad fired — the synth
         // and the on-pad flash both decay on their own.
         const padName = drums.strike(slot);
-        if (padName) drumSynth.trigger(padName);
+        if (padName) {
+          drumSynth.trigger(padName, velocity);
+          midi.drumHit(padName, velocity);
+        }
       }
     },
     onPinchUp: (slot) => {
       if (instrument === INSTRUMENT.PIANO) {
         const released = piano.releaseKey(slot);
-        if (released) pianoSynth.noteOff(released.midi);
+        if (released) {
+          pianoSynth.noteOff(released.midi);
+          midi.pianoNoteOff(released.midi);
+        }
       }
     },
   });
@@ -159,6 +192,32 @@ async function boot() {
     const muted = !e.target.checked;
     pianoSynth.setMuted(muted);
     drumSynth.setMuted(muted);
+  });
+
+  // --- Octave shift -----------------------------------------------------
+  // ±2 octaves of headroom. Shifting beyond that pushes piano notes
+  // outside the comfortable Web Audio sine range — the highs get
+  // squeaky and the lows get sub-bassy and quiet.
+  const OCTAVE_LIMIT = 2;
+  const octaveValEl = $("#octave-val");
+  function setOctave(n) {
+    const clamped = Math.max(-OCTAVE_LIMIT, Math.min(OCTAVE_LIMIT, n));
+    piano.setOctaveShift(clamped * 12);
+    octaveValEl.textContent = clamped > 0 ? `+${clamped}` : `${clamped}`;
+    // Clear sustained notes — keys' midi numbers just changed, so any
+    // held note would otherwise dangle on its old pitch.
+    pianoSynth.allNotesOff();
+  }
+  let octaveShiftN = 0;
+  $("#octave-down-btn").addEventListener("click", () => {
+    octaveShiftN--;
+    if (octaveShiftN < -OCTAVE_LIMIT) octaveShiftN = -OCTAVE_LIMIT;
+    setOctave(octaveShiftN);
+  });
+  $("#octave-up-btn").addEventListener("click", () => {
+    octaveShiftN++;
+    if (octaveShiftN > OCTAVE_LIMIT) octaveShiftN = OCTAVE_LIMIT;
+    setOctave(octaveShiftN);
   });
 
   /**
@@ -238,3 +297,9 @@ async function boot() {
 }
 
 $("#start-btn").addEventListener("click", boot, { once: true });
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}

@@ -41,8 +41,33 @@ export function createPinchDetector({ onPinchDown, onPinchUp } = {}) {
   const slots = [];
 
   function ensureSlot(i) {
-    while (slots.length <= i) slots.push({ pinching: false, ratio: 1 });
+    while (slots.length <= i) {
+      slots.push({ pinching: false, ratio: 1, history: [] });
+    }
     return slots[i];
+  }
+
+  /**
+   * Estimate strike velocity at pinch-down by looking at how fast the
+   * pinch ratio collapsed in the recent history window. A snappy
+   * close drops ratio fast; a deliberate squeeze drops it slowly.
+   *
+   * Result is mapped to [0..1] with a usable floor so even a slow
+   * pinch is audible — without the floor, a contemplative player
+   * would get notes that effectively don't sound.
+   */
+  function velocityFrom(history, current) {
+    if (history.length < 2) return 0.7;
+    const oldest = history[0];
+    const dt = (current.t - oldest.t) / 1000;
+    if (dt <= 0.001) return 0.7;
+    const dr = oldest.ratio - current.ratio; // positive when closing
+    const speed = dr / dt; // ratio units per second
+    // Empirical mapping: a brisk pinch closes ~0.4 ratio in 0.1 s ≈ 4/s
+    // and should land near 1.0; a slow squeeze ~0.4/s should land at
+    // the floor.
+    const v = 0.4 + speed * 0.15;
+    return Math.max(0.4, Math.min(1, v));
   }
 
   /**
@@ -60,12 +85,22 @@ export function createPinchDetector({ onPinchDown, onPinchUp } = {}) {
       const ratio = pinchRatio(hand);
       slot.ratio = ratio;
 
+      // Maintain a short history window for the velocity estimate.
+      // ~150 ms is long enough to capture a brisk pinch (~80 ms close)
+      // without including stale samples from before the gesture
+      // started.
+      slot.history.push({ t: now, ratio });
+      while (slot.history.length && now - slot.history[0].t > 150) {
+        slot.history.shift();
+      }
+
       if (!slot.pinching && ratio < PINCH_ON) {
         slot.pinching = true;
-        onPinchDown?.(i, hand, now);
+        const velocity = velocityFrom(slot.history, { t: now, ratio });
+        onPinchDown?.(i, hand, { now, velocity });
       } else if (slot.pinching && ratio > PINCH_OFF) {
         slot.pinching = false;
-        onPinchUp?.(i, hand, now);
+        onPinchUp?.(i, hand, { now });
       }
       out.push({ pinching: slot.pinching, ratio });
     });
@@ -78,7 +113,7 @@ export function createPinchDetector({ onPinchDown, onPinchUp } = {}) {
       const slot = slots[i];
       if (slot.pinching) {
         slot.pinching = false;
-        onPinchUp?.(i, null, now);
+        onPinchUp?.(i, null, { now });
       }
     }
 

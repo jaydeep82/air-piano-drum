@@ -48,6 +48,16 @@ export class Piano {
     this.hands = new Map(); // detection-slot -> { hoveredKey, pressedKey }
     // Cached layout dimensions so resize-driven recompute is one call.
     this._layout = null;
+    // Octave shift in semitones — settings panel writes ±12, ±24.
+    // Keys keep their on-screen positions; only the MIDI numbers and
+    // labels change. Easier UX than a scrolling keyboard, and good
+    // enough for two-octave reach.
+    this.octaveShift = 0;
+  }
+
+  setOctaveShift(semitones) {
+    this.octaveShift = semitones;
+    if (this._layout) this.resize(this._layout.width, this._layout.height);
   }
 
   resize(width, height) {
@@ -62,15 +72,17 @@ export class Piano {
     const blackH = whiteH * 0.62;
 
     this.keys = [];
+    const baseMidi = FIRST_MIDI + this.octaveShift;
     // White keys first so they sit underneath when we draw in array order.
     for (let oct = 0; oct < OCTAVES; oct++) {
       for (let i = 0; i < WHITE_OFFSETS.length; i++) {
         const whiteIdx = oct * WHITE_OFFSETS.length + i;
         const x = margin + whiteIdx * whiteW;
+        const midi = baseMidi + oct * 12 + WHITE_OFFSETS[i];
         this.keys.push({
           kind: "white",
-          midi: FIRST_MIDI + oct * 12 + WHITE_OFFSETS[i],
-          name: `${WHITE_NAMES[i]}${3 + oct}`,
+          midi,
+          name: midiName(midi),
           x, y: top, w: whiteW, h: whiteH,
         });
       }
@@ -82,7 +94,7 @@ export class Piano {
         const xCentre = margin + (whiteIdx + 1) * whiteW;
         this.keys.push({
           kind: "black",
-          midi: FIRST_MIDI + oct * 12 + b.offset,
+          midi: baseMidi + oct * 12 + b.offset,
           name: null,
           x: xCentre - blackW / 2,
           y: top,
@@ -92,7 +104,10 @@ export class Piano {
       }
     }
 
-    this._layout = { top, bottom, keyboardW, whiteW, whiteH, blackW, blackH };
+    this._layout = {
+      top, bottom, keyboardW, whiteW, whiteH, blackW, blackH,
+      width, height,
+    };
   }
 
   /** Return the key under (x, y), or null. Black keys win on overlap. */
@@ -241,6 +256,14 @@ function drawKey(ctx, k, { pressed, hoverColor }) {
     ctx.textBaseline = "alphabetic";
     ctx.fillText(k.name, k.x + k.w / 2, k.y + k.h - 8);
   }
+}
+
+function midiName(midi) {
+  // White-key letters only — we just need stable C-octave labels for
+  // orientation. (The label drawer filters to startsWith("C").)
+  const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const octave = Math.floor(midi / 12) - 1;
+  return `${NAMES[midi % 12]}${octave}`;
 }
 
 function roundRect(ctx, x, y, w, h, r) {
